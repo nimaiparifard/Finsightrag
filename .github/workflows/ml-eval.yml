@@ -36,7 +36,7 @@ jobs:
         run: git clone --depth 1 https://github.com/patronus-ai/financebench.git data/raw/financebench
       - name: Restore index cache
         id: idx
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: data/processed/index
           key: index-${{ hashFiles('ml/configs/baseline.yaml', 'ml/src/finsight/ingestion/**') }}
