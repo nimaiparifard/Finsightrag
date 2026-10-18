@@ -9,7 +9,7 @@ description = "FinSight: RAG over SEC filings with citations, hybrid search and 
 requires-python = ">=3.11"
 dependencies = [
   "numpy",
-  "pydantic>=2",
+  "pydantic>=2.14.1",
   "pyyaml",
   "jinja2",
   "typer",
