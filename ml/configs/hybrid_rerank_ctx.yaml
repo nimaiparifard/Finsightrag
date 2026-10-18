@@ -1,0 +1,3 @@
+extends: hybrid_rerank.yaml
+name: hybrid_rerank_ctx
+contextual_headers: true

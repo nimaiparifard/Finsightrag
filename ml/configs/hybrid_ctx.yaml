@@ -1,0 +1,3 @@
+extends: hybrid.yaml
+name: hybrid_ctx
+contextual_headers: true

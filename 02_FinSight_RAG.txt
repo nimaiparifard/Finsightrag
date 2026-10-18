@@ -1,0 +1,295 @@
+=====================================================================
+ PROJECT 02 – FinSight
+ Financial Filings Analyst (Full RAG Project)
+ Domain: Finance / Investment research
+=====================================================================
+Built on: 00_ai-product-template.
+
+ONE-LINE PITCH
+  Ask questions about company annual/quarterly reports (10-K, 10-Q) and
+  get accurate answers with exact page citations, tables included,
+  with automated quality evaluation in CI.
+
+WHAT IT PROVES
+  - Production RAG beyond "LangChain tutorial": parsing tables, hybrid
+    search, re-ranking, query transformation, citations, caching,
+    guardrails
+  - Evaluation-driven development (RAGAS, golden set, ablations)
+  - LLMOps: Langfuse tracing, cost tracking, prompt versioning
+
+
+---------------------------------------------------------------------
+1. BUSINESS PROBLEM
+---------------------------------------------------------------------
+Analysts read 100–300 page filings to answer questions like
+"What was Apple's operating margin in FY2023 and why did it change?".
+Generic chatbots hallucinate numbers. FinSight must:
+  - answer only from the documents, with citations
+  - handle numbers in tables correctly
+  - compare across years / companies
+  - say "I don't know" when the answer is not in the documents
+
+
+---------------------------------------------------------------------
+2. DATASETS
+---------------------------------------------------------------------
+DOCUMENT CORPUS – SEC EDGAR (free, official, no license issues)
+  API: https://data.sec.gov  (company submissions JSON, filing index)
+  Rule: must send header  User-Agent: "Your Name your@email"  and stay
+  under 10 requests/second.
+  Python helpers: `sec-edgar-downloader` or `edgartools` packages.
+  Plan: 20–50 large companies (AAPL, MSFT, AMZN, NVDA, JPM, ...),
+  10-K + 10-Q for 3–5 years -> ~500–1000 documents (HTML/PDF).
+  Alternative pre-cleaned corpus: EDGAR-CORPUS on Hugging Face
+  ("eloukas/edgar-corpus"), 10-K sections already split by Item.
+
+EVALUATION SETS
+  FinanceBench (Patronus AI) – open sample of 150 questions with
+    answers + evidence pages over real public filings
+    HF: PatronusAI/financebench ; PDFs in github.com/patronus-ai/financebench
+  FinQA / TAT-QA – numerical reasoning over financial tables+text
+    (use to test the table + calculation path)
+  Your own GOLDEN SET (very important, ~100 questions):
+    30 factual lookup, 25 numeric from tables, 20 multi-hop / comparison,
+    15 multi-document (company A vs B), 10 unanswerable (must refuse).
+    Store as ml/eval/golden_set.jsonl:
+    {"id", "question", "answer", "evidence": [{"doc_id","page"}], "type"}
+    Bootstrap with an LLM generating Q/A from chunks, then MANUALLY verify.
+
+OPTIONAL PERSIAN EXTENSION
+  Codal.ir annual reports of Tehran Stock Exchange companies (scraped,
+  for personal/research use) -> bilingual retrieval with multilingual
+  embeddings (bge-m3) – a strong differentiator for Iranian employers.
+
+
+---------------------------------------------------------------------
+3. RAG PIPELINE IN DETAIL
+---------------------------------------------------------------------
+A) INGESTION (Celery tasks, idempotent, re-runnable)
+  1. Fetch    EDGAR downloader -> MinIO s3://finsight/raw/{cik}/{accession}
+  2. Parse    HTML filings: BeautifulSoup + section detection by "Item 1A",
+              "Item 7" (MD&A) ... ; PDFs: Docling or Unstructured or
+              PyMuPDF. Interface: DocumentParser (swap any of them).
+  3. Tables   extract tables separately -> keep as Markdown AND store
+              structured rows (JSON) -> each table also gets an LLM-written
+              one-paragraph summary used for retrieval ("table summary
+              indexing"), the raw table is passed to the LLM at answer time
+  4. Chunk    strategies behind Chunker interface:
+                - recursive by characters (baseline, 800 tokens, 100 overlap)
+                - section-aware (respect Item boundaries)
+                - semantic chunking (split on embedding distance)
+              Ablate them in evaluation, pick the best by metrics.
+  5. Metadata company, ticker, CIK, fiscal year, quarter, form type,
+              section, page, chunk_type (text/table)
+  6. Contextual headers: prepend "Apple Inc. | 10-K FY2023 | Item 7 MD&A"
+              to every chunk before embedding (big quality gain, cheap)
+  7. Embed    Embedder interface: bge-large-en-v1.5 / bge-m3 (local,
+              sentence-transformers) or OpenAI text-embedding-3-small
+  8. Index    VectorStore interface: pgvector (default, same Postgres)
+              or Qdrant; BM25 index: Postgres full-text search or
+              rank_bm25 / Elasticsearch (OpenSearch) – interface again
+  9. Dedup    hash-based so re-ingesting the same filing does nothing
+
+B) QUERY TIME
+  1. Router / query understanding (LLM with JSON output):
+       - extract filters: company, year, form type
+       - classify: lookup / numeric / comparison / out-of-scope
+  2. Query transformation (configurable, ablated):
+       - multi-query (3 paraphrases), HyDE, decomposition for comparisons
+         ("Compare A and B" -> two sub-queries)
+  3. Hybrid retrieval: dense top-50 + BM25 top-50 -> Reciprocal Rank
+     Fusion -> metadata filter
+  4. Re-ranking: cross-encoder BAAI/bge-reranker-v2-m3 (local) or
+     Cohere rerank -> top 6–8 chunks
+  5. Context assembly: expand to parent section ("small-to-big"),
+     include full table for table chunks, stay in token budget
+  6. Generation: prompt with strict instructions: answer only from
+     context, cite as [doc_id:page], show calculation steps for numbers
+     -> numeric questions: LLM writes a small Python expression executed
+        in a sandbox (calculator tool) instead of doing math itself
+  7. Post-checks (guardrails):
+       - every sentence has a citation; citations exist in context
+       - numbers in answer appear in context (or come from calculator)
+       - if retrieval max score < threshold -> "not found in documents"
+  8. Semantic cache: Redis, key = embedding of query (cosine > 0.95)
+     + filters -> return cached answer (show cache hit in UI)
+  9. Streaming response via Server-Sent Events
+
+C) EVALUATION (ml/src/finsight/evaluation/)
+  Retrieval metrics: Recall@k, MRR, nDCG against evidence pages
+  Generation metrics (RAGAS): faithfulness, answer relevancy,
+    context precision, context recall; + numeric exact match (±1%)
+  Refusal accuracy on unanswerable questions
+  Latency p50/p95 and cost per query
+  Ablation table (the most impressive part of the README):
+    baseline dense -> +BM25 hybrid -> +reranker -> +contextual headers
+    -> +table summaries -> +query decomposition
+  CI gate (ml-eval.yml): runs a 30-question subset on every PR touching
+    prompts/ or retrieval code; fails if faithfulness drops > 3 points
+
+
+---------------------------------------------------------------------
+4. TECHNOLOGIES
+---------------------------------------------------------------------
+  LLM orchestration  LangGraph (graph of steps: route -> retrieve ->
+                     rerank -> generate -> verify) or plain Python with
+                     your own interfaces (simpler to explain – recommended
+                     for core, LangGraph for the agentic comparison mode)
+                     bring also llamaindex implmentation too bring better implmentatyin for main usage
+  LLMs               OpenAI GPT-4o-mini / Claude (API) + local option
+                     via vLLM or Ollama (Qwen2.5-7B-Instruct) – one config line
+  Embeddings         sentence-transformers (bge), OpenAI embeddings
+  Re-ranker          bge-reranker-v2-m3 (CrossEncoder)
+  Vector DB          pgvector (default), Qdrant (alt)
+  Keyword search     Postgres FTS / OpenSearch
+  Parsing            Docling / Unstructured / PyMuPDF / BeautifulSoup
+  Evaluation         RAGAS, custom metrics, pytest, deepeval
+  Tracing            Langfuse (self-hosted in docker-compose)
+  Backend/Frontend   Django + DRF + Celery, React + TS (see template)
+  PDF viewer         react-pdf (highlight cited page/region)
+
+
+---------------------------------------------------------------------
+5. CODE STRUCTURE
+---------------------------------------------------------------------
+finsight/
+├── backend/apps/
+│   ├── documents/           # Company, Filing, Document, Chunk(meta only),
+│   │                        # IngestionJob(status, progress, error)
+│   ├── chat/                # Conversation, Message(role, content,
+│   │                        # citations JSON, latency, cost, trace_id),
+│   │                        # Feedback(thumbs, comment)
+│   ├── collections/         # user-defined doc sets ("my watchlist")
+│   └── evaluation/          # EvalRun results visible in admin/UI
+├── ml/src/finsight/
+│   ├── interfaces.py        # DocumentParser, Chunker, Embedder,
+│   │                        # VectorStore, KeywordIndex, Reranker,
+│   │                        # LLMProvider, Cache
+│   ├── ingestion/
+│   │   ├── edgar_client.py
+│   │   ├── parsers/html_parser.py, pdf_parser.py, table_extractor.py
+│   │   ├── chunkers/recursive.py, section.py, semantic.py
+│   │   └── pipeline.py      # ingest(filing_id) -> chunks indexed
+│   ├── retrieval/
+│   │   ├── dense.py, bm25.py, hybrid.py (RRF), filters.py
+│   │   ├── rerankers/cross_encoder.py, cohere.py
+│   │   └── query_transform.py   # multi_query, hyde, decompose
+│   ├── generation/
+│   │   ├── prompts/answer_v3.jinja, router_v1.jinja ...
+│   │   ├── answer.py
+│   │   ├── calculator.py    # safe numeric evaluation
+│   │   └── guardrails.py    # citation & number verification
+│   ├── cache/semantic_cache.py
+│   ├── graph.py             # the full RAG flow wired from config
+│   ├── evaluation/
+│   │   ├── golden_set.jsonl
+│   │   ├── retrieval_metrics.py, ragas_eval.py, ablation.py
+│   │   └── report.py        # markdown table -> docs/results.md
+│   └── cli.py               # finsight ingest --ticker AAPL --years 2021-2024
+│                            # finsight eval --config configs/hybrid.yaml
+├── serving/                 # FastAPI: /v1/query (SSE streaming),
+│                            # /v1/retrieve (debug), /health, /metrics
+├── frontend/src/features/
+│   ├── chat/                # streaming chat, citation chips
+│   ├── viewer/              # PDF/HTML viewer jumping to cited page
+│   ├── library/             # companies, filings, ingestion progress
+│   ├── compare/             # side-by-side company comparison mode
+│   └── eval/                # eval runs & ablation charts
+└── configs/
+    ├── baseline.yaml, hybrid.yaml, hybrid_rerank.yaml  (ablation configs)
+    └── llm.yaml
+
+
+---------------------------------------------------------------------
+6. API
+---------------------------------------------------------------------
+  POST /api/filings/ingest/        {ticker, years, forms} -> job id
+  GET  /api/ingestion-jobs/{id}/   progress
+  GET  /api/companies/, /api/filings/?ticker=AAPL
+  POST /api/chat/conversations/
+  POST /api/chat/conversations/{id}/messages/  -> SSE stream of tokens,
+                                                 then citations event
+  POST /api/chat/messages/{id}/feedback/
+  GET  /api/evaluation/runs/
+
+
+---------------------------------------------------------------------
+7. FRONTEND
+---------------------------------------------------------------------
+  Library page: add companies by ticker, ingestion progress bars
+  Chat page: left = conversation, right = document viewer; clicking a
+    citation opens the exact page with highlight; filters (company/year)
+  Compare page: choose 2 companies + metric -> table + narrative
+  Trace link: each answer has "debug" drawer: retrieved chunks with
+    scores, rerank scores, prompt, latency per step, cost
+  Eval dashboard: ablation bar chart, trend of metrics per commit
+
+
+---------------------------------------------------------------------
+8. MLOPS / LLMOPS
+---------------------------------------------------------------------
+  - Every eval run logged to MLflow (params = config, metrics = RAGAS)
+    -> MLflow becomes your experiment history for RAG configs
+  - Prompts versioned in git + version id stored with each Message
+  - Langfuse traces every request (spans: route, retrieve, rerank, llm)
+  - User feedback (thumbs down) -> exported weekly into a "hard
+    questions" set added to the golden set after review
+  - Index versioning: index_version column; re-index into new version,
+    switch alias atomically (zero-downtime re-indexing)
+
+
+---------------------------------------------------------------------
+9. TESTING
+---------------------------------------------------------------------
+  Unit: chunkers (no chunk > max tokens, overlap correct), RRF math,
+        citation parser, calculator safety (no exec of arbitrary code)
+  Integration: ingest one small fixture filing -> query -> expected chunk
+        in top-5 (with a tiny local embedding model in CI)
+  LLM tests: use a FakeLLMProvider in unit tests (deterministic)
+  Eval gate in CI as described
+
+
+---------------------------------------------------------------------
+10. RESULTS TABLE (fill in)
+---------------------------------------------------------------------
+  Config                  | Recall@5 | Faithful. | Ans.Rel | Numeric EM | p95 s | $/query
+  Dense only              |          |           |         |            |       |
+  + BM25 hybrid           |          |           |         |            |       |
+  + Re-ranker             |          |           |         |            |       |
+  + Contextual headers    |          |           |         |            |       |
+  + Table summaries       |          |           |         |            |       |
+  + Calculator tool       |          |           |         |            |       |
+
+
+---------------------------------------------------------------------
+11. EXTENSIONS
+---------------------------------------------------------------------
+  - GraphRAG: build a knowledge graph of entities (company, segment,
+    executive, risk) in Neo4j – reuse your Knowledge Graph project
+  - Agentic mode: LangGraph agent that plans multi-step research (P09)
+  - Fine-tuned embeddings on financial Q/A pairs (sentence-transformers
+    MultipleNegativesRankingLoss) -> show recall gain
+  - Use your own FinTune model (P03) as the LLM via vLLM
+  - Persian filings (Codal) with bge-m3
+
+
+---------------------------------------------------------------------
+12. MILESTONES (~3 weeks)
+---------------------------------------------------------------------
+  Week 1: EDGAR ingestion, parsing, chunking, pgvector, simple dense RAG,
+          golden set v1 (50 Qs), eval script
+  Week 2: hybrid + reranker + query transforms + citations + guardrails
+          + calculator, ablation runs logged to MLflow
+  Week 3: Django/React UI with streaming + PDF viewer, Langfuse,
+          semantic cache, CI eval gate, README with ablation table
+
+
+RESUME BULLETS
+  - "Developed a production RAG system over 800+ SEC filings with
+     table-aware parsing, hybrid BM25+dense retrieval and cross-encoder
+     re-ranking, raising faithfulness from [X] to [Y] (RAGAS) and
+     numeric accuracy to [Z]% on a 100-question golden set."
+  - "Added evaluation gates in CI, Langfuse tracing and a Redis semantic
+     cache cutting average cost per query by [W]%."
+  Tech: Python, LangGraph, pgvector, BM25, bge-reranker, RAGAS, Langfuse,
+  Django, Celery, React, Docker, GitHub Actions, MLflow

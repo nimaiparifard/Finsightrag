@@ -1,0 +1,3 @@
+extends: baseline.yaml
+name: dense_rerank
+retrieval: {rerank: true}

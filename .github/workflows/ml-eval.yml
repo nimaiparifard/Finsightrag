@@ -1,0 +1,63 @@
+name: ML eval gate
+
+# Runs a quick evaluation on every PR that touches prompts or retrieval code, and fails the PR when a protected
+# metric drops more than 3 points below ml/eval/baseline_metrics.json.
+#
+# The index is built from the bundled FinanceBench PDFs and cached. Faithfulness/answer-relevancy need an LLM:
+# set the OPENAI_API_KEY (or ANTHROPIC_API_KEY) repository secret to enable them; without a key the gate still
+# protects the retrieval metrics (Recall@5, MRR), which need no LLM.
+
+on:
+  pull_request:
+    paths:
+      - "ml/src/finsight/generation/**"
+      - "ml/src/finsight/retrieval/**"
+      - "ml/src/finsight/ingestion/**"
+      - "ml/src/finsight/graph.py"
+      - "ml/configs/**"
+      - "ml/eval/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ml
+      - name: Fetch FinanceBench
+        run: git clone --depth 1 https://github.com/patronus-ai/financebench.git data/raw/financebench
+      - name: Restore index cache
+        id: idx
+        uses: actions/cache@v4
+        with:
+          path: data/processed/index
+          key: index-${{ hashFiles('ml/configs/baseline.yaml', 'ml/src/finsight/ingestion/**') }}
+      - name: Build index
+        if: steps.idx.outputs.cache-hit != 'true'
+        run: finsight ingest --config ml/configs/dense_rerank.yaml
+      - name: Gate
+        id: gate
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -o pipefail
+          EXTRA=""
+          if [ -n "$OPENAI_API_KEY" ]; then EXTRA="--judge"; fi
+          finsight gate --config ml/configs/dense_rerank.yaml --dataset financebench --subset 30 --max-drop 0.03 $EXTRA \
+            | tee gate.md
+      - name: Comment results
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = '### ML eval gate\n\n' + (fs.existsSync('gate.md') ? fs.readFileSync('gate.md', 'utf8') : 'gate did not produce output');
+            await github.rest.issues.createComment({...context.repo, issue_number: context.issue.number, body});

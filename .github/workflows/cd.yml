@@ -1,0 +1,63 @@
+name: CD
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: ${{ github.repository_owner }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - {name: backend, file: backend/Dockerfile, context: .}
+          - {name: serving, file: serving/Dockerfile, context: .}
+          - {name: frontend, file: frontend/Dockerfile, context: frontend}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: {registry: "${{ env.REGISTRY }}", username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/finsight-${{ matrix.name }}
+          tags: |
+            type=sha
+            type=semver,pattern={{version}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-latest
+    environment: production  # configure required reviewers on this environment for a manual approval gate
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy over SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          install -m 600 /dev/null key && printf '%s\n' "$SSH_KEY" > key
+          ssh -i key -o StrictHostKeyChecking=accept-new "$HOST" \
+            "cd /opt/finsight && git fetch --tags && git checkout $TAG && docker compose -f infra/docker-compose.yml pull && docker compose -f infra/docker-compose.yml up -d"
+      - name: Smoke test
+        env: {HOST_URL: "${{ secrets.DEPLOY_URL }}"}
+        run: |
+          for i in $(seq 1 30); do curl -fs "$HOST_URL/api/health/" && exit 0; sleep 5; done
+          echo "deploy smoke test failed" && exit 1

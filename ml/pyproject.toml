@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finsight"
+version = "0.1.0"
+description = "FinSight: RAG over SEC filings with citations, hybrid search and evaluation"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy",
+  "pydantic>=2",
+  "pyyaml",
+  "jinja2",
+  "typer",
+  "pymupdf",
+  "beautifulsoup4",
+  "lxml",
+  "rank-bm25",
+  "sentence-transformers",
+  "tiktoken",
+  "openai",
+  "anthropic",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "ruff", "mypy"]
+eval = ["mlflow", "ragas"]
+
+[project.scripts]
+finsight = "finsight.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+finsight = ["generation/prompts/*.jinja"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+extend = "../pyproject.toml"
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true

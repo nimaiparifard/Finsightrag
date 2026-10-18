@@ -1,0 +1,3 @@
+extends: baseline.yaml
+name: dense_ctx
+contextual_headers: true

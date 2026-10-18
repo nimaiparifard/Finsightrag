@@ -1,0 +1,17 @@
+# Workspace root: shared tooling config. Each component (ml, backend, serving) installs on its own.
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["data", ".tools", "frontend/node_modules", "**/migrations"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = [
+  "E501",  # line length is handled by the formatter where it matters
+  "B008",  # FastAPI Depends() in defaults is the intended pattern
+  "UP007", "UP045",
+  "B905",  # zip() pairs here are intentionally equal-length
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["finsight", "app", "apps", "config"]

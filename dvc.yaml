@@ -1,0 +1,26 @@
+# Reproducible pipeline: raw filings -> parsed pages -> index -> evaluation.
+# Remote: MinIO (S3-compatible).  dvc remote add -d minio s3://finsight-dvc
+#         dvc remote modify minio endpointurl http://localhost:9000
+stages:
+  parse_and_index:
+    cmd: finsight ingest --config ml/configs/dense_rerank_ctx.yaml
+    deps:
+      - data/raw/financebench/pdfs
+      - ml/src/finsight/ingestion
+      - ml/configs/baseline.yaml
+      - ml/configs/dense_rerank_ctx.yaml
+    outs:
+      - data/interim/parsed
+      - data/processed/index
+
+  evaluate:
+    cmd: finsight eval --config ml/configs/dense_rerank_ctx.yaml --filter-mode none
+    deps:
+      - data/processed/index
+      - data/raw/financebench/data/financebench_open_source.jsonl
+      - ml/src/finsight/retrieval
+      - ml/src/finsight/generation
+      - ml/configs
+    metrics:
+      - data/processed/eval/dense_rerank_ctx.json:
+          cache: false

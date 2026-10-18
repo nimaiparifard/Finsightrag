@@ -1,0 +1,37 @@
+name: ML reindex and evaluate
+
+# Manual / scheduled: rebuild the index with a chosen config, run the full evaluation, upload the report.
+# (The "train" step of a RAG system is re-indexing + evaluation; there is no model to promote.)
+
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: Pipeline config to evaluate
+        default: ml/configs/dense_rerank_ctx.yaml
+  schedule:
+    - cron: "0 3 * * 0"  # weekly
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e "ml[eval]"
+      - run: git clone --depth 1 https://github.com/patronus-ai/financebench.git data/raw/financebench
+      - run: finsight ingest --config ${{ inputs.config || 'ml/configs/dense_rerank_ctx.yaml' }}
+      - run: finsight eval --config ${{ inputs.config || 'ml/configs/dense_rerank_ctx.yaml' }} --filter-mode none
+      - name: Job summary
+        run: |
+          echo "## Evaluation" >> "$GITHUB_STEP_SUMMARY"
+          python -m finsight.cli report data/processed/eval/*.json --out docs/results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: {name: eval-results, path: data/processed/eval/}

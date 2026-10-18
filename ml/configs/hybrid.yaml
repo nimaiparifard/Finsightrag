@@ -1,0 +1,3 @@
+extends: baseline.yaml
+name: hybrid
+retrieval: {mode: hybrid}

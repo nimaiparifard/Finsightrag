@@ -1,0 +1,3 @@
+extends: dense_rerank_ctx.yaml
+name: dense_rerank_ctx_tables
+table_summaries: {enabled: true}

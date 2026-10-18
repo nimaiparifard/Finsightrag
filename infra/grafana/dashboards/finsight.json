@@ -1,0 +1,31 @@
+{
+  "uid": "finsight-overview",
+  "title": "FinSight overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "panels": [
+    {"id": 1, "type": "timeseries", "title": "Requests / s", "gridPos": {"x": 0, "y": 0, "w": 8, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "prometheus"},
+     "targets": [{"expr": "sum by (endpoint) (rate(finsight_requests_total[5m]))", "legendFormat": "{{endpoint}}"}]},
+    {"id": 2, "type": "timeseries", "title": "Latency p50 / p95", "gridPos": {"x": 8, "y": 0, "w": 8, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "prometheus"},
+     "fieldConfig": {"defaults": {"unit": "s"}},
+     "targets": [
+       {"expr": "histogram_quantile(0.5, sum by (le) (rate(finsight_request_seconds_bucket[5m])))", "legendFormat": "p50"},
+       {"expr": "histogram_quantile(0.95, sum by (le) (rate(finsight_request_seconds_bucket[5m])))", "legendFormat": "p95"}]},
+    {"id": 3, "type": "stat", "title": "Cache hit ratio", "gridPos": {"x": 16, "y": 0, "w": 8, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "prometheus"},
+     "fieldConfig": {"defaults": {"unit": "percentunit"}},
+     "targets": [{"expr": "sum(increase(finsight_cache_hits_total[1h])) / clamp_min(sum(increase(finsight_requests_total{endpoint=\"query\"}[1h])), 1)"}]},
+    {"id": 4, "type": "timeseries", "title": "LLM tokens / min", "gridPos": {"x": 0, "y": 8, "w": 8, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "prometheus"},
+     "targets": [{"expr": "sum by (kind) (rate(finsight_llm_tokens_total[5m])) * 60", "legendFormat": "{{kind}}"}]},
+    {"id": 5, "type": "timeseries", "title": "Refusals and guardrail failures", "gridPos": {"x": 8, "y": 8, "w": 16, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "prometheus"},
+     "targets": [
+       {"expr": "rate(finsight_refusals_total[15m])", "legendFormat": "refused (not found)"},
+       {"expr": "rate(finsight_guardrail_failures_total[15m])", "legendFormat": "guardrail failure"}]}
+  ]
+}

@@ -1,0 +1,3 @@
+extends: dense_rerank.yaml
+name: dense_rerank_ctx
+contextual_headers: true

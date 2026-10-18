@@ -1,0 +1,14 @@
+# Dense-only baseline. Other configs extend this file and override only what changes.
+name: baseline
+parser: {name: pdf, extract_tables: true}
+chunker: {name: recursive, max_tokens: 800, overlap_tokens: 100}
+contextual_headers: false
+table_chunks: true
+embedder:
+  name: sentence_transformers
+  params: {model: BAAI/bge-base-en-v1.5}
+retrieval: {mode: dense, rerank: false, top_k: 8, query_transform: none}
+llm:
+  provider: auto            # auto | openai | anthropic | ollama | vllm | groq | together | openrouter | gemini
+  params: {}                # auto = first reachable: API key in env, else local Ollama
+generation: {prompt: answer_v2, calculator: true, guardrails: true}

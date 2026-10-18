@@ -1,0 +1,6 @@
+# Pin the local model explicitly (needs `ollama pull qwen2.5:7b-instruct`)
+extends: dense_rerank_ctx.yaml
+name: dense_rerank_ctx_ollama
+llm:
+  provider: ollama
+  params: {model: "qwen2.5:7b-instruct", num_ctx: 8192}
